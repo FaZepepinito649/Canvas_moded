@@ -178,6 +178,21 @@ p{margin:0}
 .blank{color:var(--flag);font-weight:600;font-size:14.5px}
 .rmeta{font-size:13.5px;color:var(--muted)}
 .rmeta .flagged{color:var(--flag);font-weight:600}
+/* ---------- Historial ---------- */
+.hist{margin-top:32px;display:grid;gap:12px}
+.hist-head{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:end;gap:10px}
+.hist-head h2{font-size:22px}
+.hist-tools{display:flex;flex-wrap:wrap;gap:8px}
+.hist-search{font:15px var(--f-body);padding:9px 12px;min-height:40px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--ink);width:100%;max-width:360px}
+.hlist{list-style:none;margin:0;padding:0;display:grid;gap:8px}
+.hitem{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:12px 16px;display:flex;flex-wrap:wrap;align-items:center;gap:10px 16px}
+.hinfo{flex:1 1 260px;min-width:0;display:grid;gap:2px}
+.hinfo strong{font-family:var(--f-display);font-size:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hinfo span{font-size:13.5px;color:var(--muted)}
+.hbtns{display:flex;flex-wrap:wrap;gap:6px}
+.hbtns .btn{min-height:34px;padding:7px 12px;font-size:14px}
+.btn.danger{color:var(--flag)}
+.hempty{color:var(--muted);font-size:15px;padding:14px 16px;border:1px dashed var(--line);border-radius:8px}
 #copyFallback{width:100%;min-height:180px;font:13px/1.5 var(--f-mono);padding:12px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--ink);margin-bottom:20px}
 
 @media (max-width:860px){
@@ -212,10 +227,6 @@ p{margin:0}
     <p id="resumeText"></p>
     <div class="btns"><button id="btnResume" class="btn primary">Reanudar</button><button id="btnDiscard" class="btn">Descartar</button></div>
   </div>
-  <div id="lastBox" class="notice" hidden>
-    <p id="lastText"></p>
-    <div class="btns"><button id="btnLast" class="btn">Ver reporte</button></div>
-  </div>
 
   <div class="setup-grid">
     <div class="editor">
@@ -243,6 +254,23 @@ p{margin:0}
       <button id="btnStart" class="btn primary big" type="button">Comenzar examen</button>
     </aside>
   </div>
+
+  <section class="hist" aria-labelledby="histTitle">
+    <div class="hist-head">
+      <div>
+        <p class="eyebrow">Memoria</p>
+        <h2 id="histTitle">Historial de exámenes</h2>
+      </div>
+      <div class="hist-tools">
+        <button id="hExport" class="btn ghost" type="button">Exportar</button>
+        <label class="btn ghost file">Importar<input type="file" id="hImport" accept=".json"></label>
+        <button id="hClear" class="btn ghost danger" type="button">Borrar todo</button>
+      </div>
+    </div>
+    <input id="hSearch" class="hist-search" type="search" placeholder="Buscar por título…" aria-label="Buscar en el historial" hidden>
+    <ol class="hlist" id="hList"></ol>
+    <p id="hEmpty" class="hempty" hidden>Aún no has entregado ningún examen. Cada examen que entregues se guardará aquí con su reporte.</p>
+  </section>
 
   <details class="format">
     <summary>Cómo escribir el documento</summary>
@@ -323,7 +351,7 @@ c) 14
     <button id="cpCSV" class="btn" type="button">Copiar CSV</button>
     <button id="cpJSON" class="btn" type="button">Copiar JSON</button>
     <span class="sep"></span>
-    <button id="btnEdit" class="btn ghost" type="button">Editar documento</button>
+    <button id="btnEdit" class="btn ghost" type="button">Volver al inicio</button>
     <button id="btnAgain" class="btn primary" type="button">Nuevo intento</button>
   </div>
   <textarea id="copyFallback" readonly hidden aria-label="Texto para copiar"></textarea>
@@ -355,7 +383,7 @@ const store = {
   set(k,v){ try{ localStorage.setItem(k,v); }catch(e){} },
   del(k){ try{ localStorage.removeItem(k); }catch(e){} }
 };
-const K_DOC='examen.doc', K_RUN='examen.intento', K_LAST='examen.ultimo';
+const K_DOC='examen.doc', K_RUN='examen.intento', K_LAST='examen.ultimo', K_HIST='examen.historial';
 const TIPOS = {opcion:'Opción múltiple', varias:'Selección múltiple', libre:'Respuesta libre'};
 const LETRAS = 'abcdefghijklmnopqrstuvwxyz';
 
@@ -561,7 +589,7 @@ function startExam(p){
   S = { v:1, title:p.title, instr:p.instr, qs,
     ans: qs.map(q=> q.tipo==='varias' ? [] : q.tipo==='libre' ? '' : null),
     t:zeros(), away:zeros(), visits:zeros(), changes:zeros(), flags:Array(n).fill(false),
-    cur:0, started:Date.now(), finished:null, shuffled:{q:$('shufQ').checked, o:shufO} };
+    cur:0, started:Date.now(), finished:null, shuffled:{q:$('shufQ').checked, o:shufO}, doc:$('doc').value };
   S.visits[0]=1;
   enterExam();
 }
@@ -686,6 +714,7 @@ $('mOk').addEventListener('click',()=>{
   $('modal').hidden=true; tick();
   S.finished=Date.now();
   store.del(K_RUN); store.set(K_LAST,JSON.stringify(S));
+  addToHistory(S);
   renderReport(S);
 });
 
@@ -803,13 +832,80 @@ function refreshNotices(){
     $('resumeText').textContent=`Tienes un intento sin entregar de "${run.title}": ${done} de ${run.qs.length} respondidas, ${fmt(totalMs(run))} transcurridos.`;
     $('resume').hidden=false;
   } else $('resume').hidden=true;
-  const lr=readJSON(K_LAST);
-  if(lr && lr.finished){ $('lastText').textContent=`Último examen entregado: "${lr.title}" el ${dateStr(lr.finished)}.`; $('lastBox').hidden=false; }
-  else $('lastBox').hidden=true;
+  renderHistory();
 }
 $('btnResume').addEventListener('click',()=>{ const run=readJSON(K_RUN); if(run){ S=run; enterExam(); } });
 $('btnDiscard').addEventListener('click',()=>{ store.del(K_RUN); refreshNotices(); toast('Intento descartado'); });
-$('btnLast').addEventListener('click',()=>{ const lr=readJSON(K_LAST); if(lr) renderReport(lr); });
+
+/* ---------------- Historial (memoria) ---------------- */
+function getHistory(){ const h=readJSON(K_HIST); return Array.isArray(h) ? h.filter(x=>x && x.qs && x.finished) : []; }
+function setHistory(h){
+  h.sort((a,b)=>b.finished-a.finished);
+  // Si el almacenamiento se llena, se descartan los más antiguos.
+  while(h.length){
+    try{ localStorage.setItem(K_HIST, JSON.stringify(h)); return true; }
+    catch(e){ if(h.length===1) break; h.pop(); }
+  }
+  return false;
+}
+function addToHistory(st){
+  const h=getHistory().filter(x=>x.started!==st.started);
+  h.unshift(JSON.parse(JSON.stringify(st)));
+  if(!setHistory(h)) toast('No se pudo guardar en el historial (almacenamiento lleno).');
+}
+function renderHistory(){
+  const h=getHistory(), list=$('hList'), q=$('hSearch').value.trim().toLowerCase();
+  list.replaceChildren();
+  $('hEmpty').hidden = h.length>0;
+  $('hSearch').hidden = h.length<5;
+  $('hExport').disabled = $('hClear').disabled = !h.length;
+  h.filter(st=>!q || st.title.toLowerCase().includes(q)).forEach(st=>{
+    const n=st.qs.length, done=st.qs.filter((qq,i)=>answerText(qq,st.ans[i])!=null).length;
+    const li=el('li','hitem'), info=el('div','hinfo');
+    info.append(el('strong',null,st.title), el('span',null,`${dateStr(st.finished)} · ${done}/${n} respondidas · ${fmt(totalMs(st))}`));
+    const btns=el('div','hbtns');
+    const bv=el('button','btn','Ver reporte'); bv.type='button';
+    bv.addEventListener('click',()=>renderReport(st));
+    btns.append(bv);
+    if(st.doc){
+      const br=el('button','btn','Repetir'); br.type='button'; br.title='Cargar este documento en el editor';
+      br.addEventListener('click',()=>{ $('doc').value=st.doc; store.set(K_DOC,st.doc); updatePreview(); window.scrollTo({top:0}); toast('Documento cargado. Pulsa "Comenzar examen".'); });
+      btns.append(br);
+    }
+    const bd=el('button','btn ghost danger','Eliminar'); bd.type='button';
+    bd.addEventListener('click',()=>{
+      if(!confirm(`¿Eliminar "${st.title}" del ${dateStr(st.finished)} del historial?`)) return;
+      setHistory(getHistory().filter(x=>x.started!==st.started)); renderHistory(); toast('Examen eliminado del historial');
+    });
+    btns.append(bd);
+    li.append(info,btns); list.append(li);
+  });
+}
+$('hSearch').addEventListener('input',renderHistory);
+$('hClear').addEventListener('click',()=>{
+  if(!confirm('¿Borrar todo el historial de exámenes? Esta acción no se puede deshacer.')) return;
+  store.del(K_HIST); store.del(K_LAST); renderHistory(); toast('Historial borrado');
+});
+$('hExport').addEventListener('click',()=>{
+  const blob=new Blob([JSON.stringify({tipo:'historial-examenes', version:1, examenes:getHistory()},null,2)],{type:'application/json'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+  a.download=`historial-examenes-${new Date().toISOString().slice(0,10)}.json`;
+  document.body.append(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+});
+$('hImport').addEventListener('change', async e=>{
+  const f=e.target.files[0]; e.target.value=''; if(!f) return;
+  try{
+    const j=JSON.parse(await f.text());
+    const inc=(Array.isArray(j)?j:j.examenes||[]).filter(x=>x && Array.isArray(x.qs) && x.finished && Array.isArray(x.ans));
+    if(!inc.length){ toast('El archivo no contiene exámenes válidos.'); return; }
+    const h=getHistory(), ids=new Set(h.map(x=>x.started));
+    const nuevos=inc.filter(x=>!ids.has(x.started));
+    setHistory(h.concat(nuevos)); renderHistory();
+    toast(`${nuevos.length} ${nuevos.length===1?'examen importado':'exámenes importados'}`);
+  }catch(err){ toast('No se pudo leer el archivo de historial.'); }
+});
+// Migrar el último examen guardado por versiones anteriores.
+(function(){ const lr=readJSON(K_LAST); if(lr && lr.finished && !getHistory().some(x=>x.started===lr.started)) addToHistory(lr); })();
 
 $('doc').value = store.get(K_DOC) || SAMPLE;
 updatePreview();
