@@ -130,6 +130,13 @@ p{margin:0}
 .opt .otext{white-space:pre-wrap;overflow-wrap:anywhere}
 .libre{width:100%;min-height:220px;resize:vertical;font:16px/1.55 var(--f-body);padding:12px 14px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--ink)}
 .libre:focus{border-color:var(--accent);outline:none;box-shadow:0 0 0 3px var(--accent-soft)}
+.stage{position:relative}
+.pausebox{position:absolute;inset:0;z-index:4;background:var(--bg);border:1px dashed var(--line);border-radius:8px;display:grid;place-content:center;justify-items:center;gap:12px;padding:24px;text-align:center;min-height:320px}
+.pausebox h2{font-size:24px}
+.pausebox p{color:var(--muted);max-width:40ch}
+.stage.is-paused{min-height:340px}
+.stage.is-paused > :not(.pausebox){visibility:hidden}
+.clock.paused span{color:var(--flag)}
 .qfoot{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
 
 /* ---------- Modal & toast ---------- */
@@ -307,7 +314,8 @@ c) 14
   <div class="topbar"><div class="topbar-in">
     <div class="tb-title"><strong id="exTitle"></strong><span id="exProgress"></span></div>
     <div class="tb-right">
-      <div class="clock"><small>Tiempo total</small><span id="exClock">0:00</span></div>
+      <div class="clock" id="exClockBox"><small id="exClockLbl">Tiempo total</small><span id="exClock">0:00</span></div>
+      <button id="btnPause" class="btn" type="button" aria-pressed="false">Pausar</button>
       <button id="btnSubmit" class="btn primary" type="button">Entregar examen</button>
     </div>
   </div></div>
@@ -318,7 +326,13 @@ c) 14
         <ol id="qnav"></ol>
         <p class="legend"><span><i class="lg-ans"></i>Respondida</span><span><i class="lg-flag"></i>Marcada</span></p>
       </nav>
-      <div class="stage">
+      <div class="stage" id="stage">
+        <div id="pauseBox" class="pausebox" hidden>
+          <p class="eyebrow">En pausa</p>
+          <h2>Tiempo detenido</h2>
+          <p id="pauseInfo"></p>
+          <button id="btnResumeQ" class="btn primary" type="button">Reanudar</button>
+        </div>
         <p id="exInstr" class="instr" hidden></p>
         <article class="qcard">
           <header class="qhead">
@@ -589,7 +603,8 @@ function startExam(p){
   S = { v:1, title:p.title, instr:p.instr, qs,
     ans: qs.map(q=> q.tipo==='varias' ? [] : q.tipo==='libre' ? '' : null),
     t:zeros(), away:zeros(), visits:zeros(), changes:zeros(), flags:Array(n).fill(false),
-    cur:0, started:Date.now(), finished:null, shuffled:{q:$('shufQ').checked, o:shufO}, doc:$('doc').value };
+    cur:0, started:Date.now(), finished:null, shuffled:{q:$('shufQ').checked, o:shufO}, doc:$('doc').value,
+    paused:false, pausedMs:0, pauses:0 };
   S.visits[0]=1;
   enterExam();
 }
@@ -597,7 +612,7 @@ function enterExam(){
   last=performance.now(); wasHidden=document.hidden;
   $('exTitle').textContent=S.title;
   $('exInstr').textContent=S.instr; $('exInstr').hidden=!S.instr;
-  show('exam'); renderQuestion(); renderNav(); renderClocks(); save(true);
+  show('exam'); renderQuestion(); renderNav(); renderPause(); save(true);
 }
 function answerText(q,a){
   if(q.tipo==='libre') return (a||'').trim() || null;
@@ -662,7 +677,7 @@ function renderQuestion(){
   renderClocks();
 }
 function go(i){
-  if(i<0 || i>=S.qs.length || i===S.cur) return;
+  if(S.paused || i<0 || i>=S.qs.length || i===S.cur) return;
   tick(); S.cur=i; S.visits[i]++;
   renderQuestion(); renderNav(); save(true);
   window.scrollTo({top:0});
@@ -676,9 +691,11 @@ function renderClocks(){
 function tick(){
   const now=performance.now(), d=now-last; last=now;
   if(!S || S.finished || $('exam').hidden) { wasHidden=document.hidden; return; }
-  if(wasHidden) S.away[S.cur]+=d; else S.t[S.cur]+=d;
+  if(S.paused) S.pausedMs=(S.pausedMs||0)+d;
+  else if(wasHidden) S.away[S.cur]+=d; else S.t[S.cur]+=d;
   wasHidden=document.hidden;
   renderClocks();
+  if(S.paused) $('pauseInfo').textContent=`Llevas ${fmt(S.pausedMs)} en pausa. La pregunta ${S.cur+1} se queda en ${fmt(S.t[S.cur]+S.away[S.cur])} y el total en ${fmt(totalMs(S))}.`;
   if(now-lastSave>2000) save(true);
 }
 setInterval(tick,250);
@@ -689,6 +706,31 @@ let saveT;
 function saveSoon(){ clearTimeout(saveT); saveT=setTimeout(()=>save(true),400); }
 function save(){ if(S && !S.finished){ lastSave=performance.now(); store.set(K_RUN,JSON.stringify(S)); } }
 
+function setPaused(on){
+  if(!S || S.finished || !!S.paused===on) return;
+  tick(); S.paused=on;
+  if(on) S.pauses=(S.pauses||0)+1;
+  renderPause(); save(true);
+  toast(on ? 'Tiempo en pausa' : 'Tiempo reanudado');
+}
+function renderPause(){
+  const on=!!(S && S.paused);
+  $('pauseBox').hidden=!on;
+  $('stage').classList.toggle('is-paused',on);
+  $('qnav').inert=on;
+  const b=$('btnPause'); b.textContent=on?'Reanudar':'Pausar'; b.setAttribute('aria-pressed',String(on));
+  b.classList.toggle('primary',on);
+  $('exClockBox').classList.toggle('paused',on);
+  $('exClockLbl').textContent=on?'En pausa':'Tiempo total';
+  tick();
+  if(on) $('btnResumeQ').focus();
+}
+$('btnPause').addEventListener('click',()=>setPaused(!S.paused));
+$('btnResumeQ').addEventListener('click',()=>setPaused(false));
+document.addEventListener('keydown',e=>{
+  if(!S || S.finished || $('exam').hidden || !$('modal').hidden) return;
+  if(e.key.toLowerCase()==='p' && (e.altKey) ){ e.preventDefault(); setPaused(!S.paused); }
+});
 $('btnPrev').addEventListener('click',()=>go(S.cur-1));
 $('btnNext').addEventListener('click',()=>{ S.cur===S.qs.length-1 ? openSubmit() : go(S.cur+1); });
 $('btnFlag').addEventListener('click',()=>{ S.flags[S.cur]=!S.flags[S.cur]; renderQuestion(); renderNav(); save(true); });
@@ -712,7 +754,7 @@ $('modal').addEventListener('click',e=>{ if(e.target===$('modal')) $('modal').hi
 document.addEventListener('keydown',e=>{ if(e.key==='Escape' && !$('modal').hidden) $('modal').hidden=true; });
 $('mOk').addEventListener('click',()=>{
   $('modal').hidden=true; tick();
-  S.finished=Date.now();
+  S.finished=Date.now(); S.paused=false; renderPause();
   store.del(K_RUN); store.set(K_LAST,JSON.stringify(S));
   addToHistory(S);
   renderReport(S);
@@ -741,6 +783,7 @@ function renderReport(st){
     ['Promedio', fmt(total/n), 'por pregunta'],
     ['Más larga', fmt(longest.t+longest.away), `P${longest.q.id+1}`]
   ];
+  if((st.pausedMs||0)>=1000) items.push(['En pausa', fmt(st.pausedMs), `${st.pauses||1} ${(st.pauses||1)===1?'pausa':'pausas'}, no cuenta`]);
   for(const [k,v,s] of items){
     const d=el('div','stat'); const dd=el('dd',null,v);
     if(s){ dd.append(' '); dd.append(el('small',null,s)); }
@@ -790,7 +833,7 @@ function renderReport(st){
 
 function reportText(st){
   const rs=rows(st), total=totalMs(st), done=rs.filter(r=>r.txt!=null).length;
-  const L=[`REPORTE — ${st.title}`, `Entregado: ${dateStr(st.finished)}`, `Tiempo total: ${fmt(total)} · Respondidas: ${done}/${rs.length}`, ''];
+  const L=[`REPORTE — ${st.title}`, `Entregado: ${dateStr(st.finished)}`, `Tiempo total: ${fmt(total)} · Respondidas: ${done}/${rs.length}${(st.pausedMs||0)>=1000?` · En pausa: ${fmt(st.pausedMs)} (no cuenta)`:''}`, ''];
   rs.forEach(r=>{
     L.push(`Pregunta ${r.q.id+1} (${TIPOS[r.q.tipo]}) — ${fmt(r.t+r.away)}${r.flag?' [marcada]':''}`);
     L.push(r.q.texto);
@@ -807,7 +850,7 @@ function reportCSV(st){
   return lines.join('\n');
 }
 function reportJSON(st){
-  return JSON.stringify({titulo:st.title, entregado:new Date(st.finished).toISOString(), tiempo_total_s:Math.round(totalMs(st)/1000),
+  return JSON.stringify({titulo:st.title, entregado:new Date(st.finished).toISOString(), tiempo_total_s:Math.round(totalMs(st)/1000), pausa_s:Math.round((st.pausedMs||0)/1000), pausas:st.pauses||0,
     preguntas:rows(st).map(r=>({numero:r.q.id+1, tipo:r.q.tipo, enunciado:r.q.texto,
       opciones:r.q.opciones.length?Object.fromEntries(r.q.opciones.map(o=>[o.letra,o.texto])):undefined,
       respuesta: r.q.tipo==='libre' ? (r.txt||null) : (r.q.tipo==='varias' ? r.ans.slice().sort() : r.ans),
@@ -829,7 +872,7 @@ function refreshNotices(){
   const run=readJSON(K_RUN);
   if(run && run.qs && !run.finished){
     const done=run.qs.filter((q,i)=>answerText(q,run.ans[i])!=null).length;
-    $('resumeText').textContent=`Tienes un intento sin entregar de "${run.title}": ${done} de ${run.qs.length} respondidas, ${fmt(totalMs(run))} transcurridos.`;
+    $('resumeText').textContent=`Tienes un intento sin entregar de "${run.title}": ${done} de ${run.qs.length} respondidas, ${fmt(totalMs(run))} transcurridos${run.paused?' (en pausa)':''}.`;
     $('resume').hidden=false;
   } else $('resume').hidden=true;
   renderHistory();
